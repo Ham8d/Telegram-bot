@@ -146,22 +146,18 @@ async function sendContent(chatId, btn) {
 }
 
 // ─── User menu ────────────────────────────────────────────────
-// إذا الزر عنده customUrl، الزر يفتح الرابط مباشرةً بدل callback
+// الأزرار دائماً تستخدم callback_data لإرسال المحتوى — الرابط المخصص هو alias للـ start parameter فقط
 function buildMenu(buttons) {
   const keys = Object.keys(buttons).filter(k => !buttons[k].hidden);
   if (!keys.length) return null;
   const rows = [];
   for (let i = 0; i < keys.length; i += 2) {
     const b0 = buttons[keys[i]];
-    const btn0 = b0.customUrl
-      ? { text: b0.label, url: b0.customUrl }
-      : { text: b0.label, callback_data: "btn:" + keys[i] };
+    const btn0 = { text: b0.label, callback_data: "btn:" + keys[i] };
     const row = [btn0];
     if (keys[i+1]) {
       const b1 = buttons[keys[i+1]];
-      const btn1 = b1.customUrl
-        ? { text: b1.label, url: b1.customUrl }
-        : { text: b1.label, callback_data: "btn:" + keys[i+1] };
+      const btn1 = { text: b1.label, callback_data: "btn:" + keys[i+1] };
       row.push(btn1);
     }
     rows.push(row);
@@ -199,10 +195,19 @@ async function handleStart(msg, payload) {
   const pending = await checkSub(userId);
   if (pending.length) { await sendSubPrompt(chatId, pending, payload); return; }
 
-  if (payload && payload.startsWith("btn_")) {
-    const key = payload.slice(4);
+  if (payload) {
     const btns = await getButtons();
-    if (btns[key]) { await sendContent(chatId, btns[key]); return; }
+
+    // الرابط الافتراضي: btn_KEY
+    if (payload.startsWith("btn_")) {
+      const key = payload.slice(4);
+      if (btns[key]) { await sendContent(chatId, btns[key]); return; }
+    }
+
+    // ✅ الرابط المخصص: يبحث عن زر customAlias يطابق الـ payload
+    // كلا الرابطين (الافتراضي والمخصص) يرسلان نفس المحتوى المحفوظ
+    const aliasKey = Object.keys(btns).find(k => btns[k].customAlias === payload);
+    if (aliasKey) { await sendContent(chatId, btns[aliasKey]); return; }
   }
 
   const info = await getBotInfo();
@@ -259,20 +264,48 @@ async function handleAdminReply(msg, state) {
     return;
   }
 
-  // ✅ تعديل الرابط المخصص للزر
-  if (state.step === "seturl") {
-    let url = text.trim();
-    if (!url) { await send(chatId, "❌ الرابط فارغ. أرسل الرابط مجدداً:"); return; }
-    if (!url.startsWith("http://") && !url.startsWith("https://")) url = "https://" + url;
+  // ✅ تعيين اسم مخصص (alias) للرابط
+  // الرابط المخصص والافتراضي كلاهما يوصلان لنفس المحتوى المحفوظ
+  if (state.step === "setalias") {
+    let alias = text.trim();
+    if (!alias || alias === "-") {
+      // إزالة الـ alias
+      const btns = await getButtons();
+      if (btns[state.key]) {
+        delete btns[state.key].customAlias;
+        await setButtons(btns);
+        await send(chatId,
+          "✅ <b>تم إزالة الرابط المخصص.</b>\n\nالزر الآن يعمل بالرابط الافتراضي فقط.",
+          [[{ text: "↩️ القائمة", callback_data: "adm:open" }]]
+        );
+      }
+      return;
+    }
+    // تنظيف الاسم: أحرف وأرقام وشرطة سفلية فقط، بدون مسافات
+    alias = alias.replace(/[^a-zA-Z0-9_\u0600-\u06FF]/g, "_").slice(0, 50);
     const btns = await getButtons();
     if (!btns[state.key]) { await send(chatId, "❌ الزر غير موجود."); return; }
-    btns[state.key].customUrl = url;
+    // التأكد أن الـ alias غير مستخدم في زر آخر
+    const conflict = Object.keys(btns).find(k => k !== state.key && btns[k].customAlias === alias);
+    if (conflict) {
+      await send(chatId,
+        "❌ هذا الاسم المخصص مستخدم في زر آخر (" + btns[conflict].label + ").\n\nاختر اسماً مختلفاً:",
+        [[{ text: "↩️ القائمة", callback_data: "adm:open" }]]
+      );
+      return;
+    }
+    btns[state.key].customAlias = alias;
     await setButtons(btns);
+    const me = await tg("getMe");
+    const u = me.result && me.result.username;
+    const defaultLink = "https://t.me/" + u + "?start=btn_" + state.key;
+    const customLink  = "https://t.me/" + u + "?start=" + alias;
     await send(chatId,
-      "✅ <b>تم تعديل الرابط بنجاح!</b>\n\n" +
-      "🔘 الزر: <b>" + btns[state.key].label + "</b>\n" +
-      "🔗 الرابط الجديد:\n<code>" + url + "</code>\n\n" +
-      "الآن عند ضغط المستخدم على الزر سيفتح هذا الرابط مباشرةً.",
+      "✅ <b>تم تعيين الرابط المخصص بنجاح!</b>\n\n" +
+      "🔘 الزر: <b>" + btns[state.key].label + "</b>\n\n" +
+      "🔗 الرابط الافتراضي:\n<code>" + defaultLink + "</code>\n\n" +
+      "✨ الرابط المخصص:\n<code>" + customLink + "</code>\n\n" +
+      "✅ <b>كلا الرابطين يرسلان نفس المحتوى المحفوظ تماماً.</b>",
       [[{ text: "↩️ القائمة", callback_data: "adm:open" }]]
     );
     return;
@@ -325,7 +358,8 @@ async function saveButton(chatId, label, type, content, caption) {
     "✅ <b>تم حفظ الزر بنجاح!</b>\n\n" +
     "🔘 الاسم: <b>" + label + "</b>\n" +
     "📎 النوع: " + type + "\n\n" +
-    "🔗 <b>الرابط المباشر:</b>\n<code>" + link + "</code>\n\n" +
+    "🔗 <b>الرابط الافتراضي:</b>\n<code>" + link + "</code>\n\n" +
+    "💡 يمكنك إضافة رابط مخصص من قائمة الأزرار لاحقاً.\n\n" +
     "👁 <b>هل يظهر الزر في قائمة المستخدمين؟</b>",
     [
       [{ text: "👁 مرئي للجميع", callback_data: "adm:vis:" + key + ":0" },
@@ -378,7 +412,7 @@ async function handleCallback(query) {
       return;
     }
 
-    // ─── قائمة الأزرار مع زر تعديل الرابط لكل زر ────────────
+    // ─── قائمة الأزرار مع زر تعيين الرابط المخصص لكل زر ────────────
     if (data === "adm:list") {
       const btns = await getButtons();
       const keys = Object.keys(btns);
@@ -388,13 +422,13 @@ async function handleCallback(query) {
       }
       let t = "📋 <b>الأزرار:</b>\n\n";
       keys.forEach(k => {
-        const hasUrl = btns[k].customUrl ? " 🔗" : "";
-        t += (btns[k].hidden ? "🔒 مخفي" : "👁 مرئي") + " — <b>" + btns[k].label + "</b>" + hasUrl + "\n";
+        const hasAlias = btns[k].customAlias ? " ✨" : "";
+        t += (btns[k].hidden ? "🔒 مخفي" : "👁 مرئي") + " — <b>" + btns[k].label + "</b>" + hasAlias + "\n";
       });
-      t += "\n<i>🔗 = يفتح رابط مخصص عند الضغط</i>";
+      t += "\n<i>✨ = يمتلك رابطاً مخصصاً إضافياً (كلا الرابطين يرسلان نفس المحتوى)</i>";
       const kb = keys.map(k => [
         { text: (btns[k].hidden ? "🔒 " : "👁 ") + btns[k].label, callback_data: "adm:toggle:" + k },
-        { text: btns[k].customUrl ? "✏️ تعديل الرابط" : "🔗 تعيين رابط", callback_data: "adm:seturl:" + k }
+        { text: btns[k].customAlias ? "✏️ تعديل الرابط المخصص" : "✨ إضافة رابط مخصص", callback_data: "adm:setalias:" + k }
       ]);
       kb.push([{ text: "↩️ رجوع", callback_data: "adm:back" }]);
       await editMsg(chatId, msgId, t, kb);
@@ -409,7 +443,10 @@ async function handleCallback(query) {
       keys.forEach(k => {
         t += "🔘 <b>" + btns[k].label + "</b>\n";
         t += "الرابط الافتراضي: <code>https://t.me/" + u + "?start=btn_" + k + "</code>\n";
-        if (btns[k].customUrl) t += "🔗 الرابط المخصص: <code>" + btns[k].customUrl + "</code>\n";
+        if (btns[k].customAlias) {
+          t += "✨ الرابط المخصص: <code>https://t.me/" + u + "?start=" + btns[k].customAlias + "</code>\n";
+          t += "<i>↑ كلا الرابطين يرسلان نفس المحتوى</i>\n";
+        }
         t += "\n";
       });
       await editMsg(chatId, msgId, t, [[{ text: "↩️ رجوع", callback_data: "adm:back" }]]);
@@ -456,33 +493,52 @@ async function handleCallback(query) {
       const allBtns = await getButtons(); const keys2 = Object.keys(allBtns);
       let t = "📋 <b>الأزرار:</b>\n\n";
       keys2.forEach(k => {
-        const hasUrl = allBtns[k].customUrl ? " 🔗" : "";
-        t += (allBtns[k].hidden ? "🔒 مخفي" : "👁 مرئي") + " — <b>" + allBtns[k].label + "</b>" + hasUrl + "\n";
+        const hasAlias = allBtns[k].customAlias ? " ✨" : "";
+        t += (allBtns[k].hidden ? "🔒 مخفي" : "👁 مرئي") + " — <b>" + allBtns[k].label + "</b>" + hasAlias + "\n";
       });
-      t += "\n<i>🔗 = يفتح رابط مخصص عند الضغط</i>";
+      t += "\n<i>✨ = يمتلك رابطاً مخصصاً إضافياً (كلا الرابطين يرسلان نفس المحتوى)</i>";
       const kb2 = keys2.map(k => [
         { text: (allBtns[k].hidden ? "🔒 " : "👁 ") + allBtns[k].label, callback_data: "adm:toggle:" + k },
-        { text: allBtns[k].customUrl ? "✏️ تعديل الرابط" : "🔗 تعيين رابط", callback_data: "adm:seturl:" + k }
+        { text: allBtns[k].customAlias ? "✏️ تعديل الرابط المخصص" : "✨ إضافة رابط مخصص", callback_data: "adm:setalias:" + k }
       ]);
       kb2.push([{ text: "↩️ رجوع", callback_data: "adm:back" }]);
       await editMsg(chatId, msgId, t, kb2);
       return;
     }
 
-    // ✅ تعيين أو تعديل رابط مخصص لأي زر
+    // ✅ تعيين اسم مخصص (alias) للرابط — كلا الرابطين يرسلان نفس المحتوى
+    if (data.startsWith("adm:setalias:")) {
+      const key = data.slice("adm:setalias:".length);
+      const btns = await getButtons();
+      const btn = btns[key];
+      if (!btn) { await send(chatId, "❌ الزر غير موجود."); return; }
+      const currentAlias = btn.customAlias || "";
+      await forceReply(chatId, embedState(
+        "✨ <b>تعيين رابط مخصص للزر: " + btn.label + "</b>\n\n" +
+        (currentAlias
+          ? "الاسم المخصص الحالي: <code>" + currentAlias + "</code>\n\n"
+          : "هذا الزر ليس له رابط مخصص بعد.\n\n") +
+        "اضغط ↩️ <b>رد (Reply)</b> وأرسل الاسم المخصص:\n" +
+        "<i>مثال: mohammed أو my_content أو محتوى1</i>\n\n" +
+        "⚠️ سيتم إنشاء رابط: <code>https://t.me/BOT?start=الاسم</code>\n" +
+        "✅ كلا الرابطين (الافتراضي والمخصص) سيرسلان <b>نفس المحتوى المحفوظ</b>\n\n" +
+        "أو أرسل <code>-</code> لإزالة الرابط المخصص.",
+        { step: "setalias", key }
+      ));
+      return;
+    }
+
+    // دعم للبيانات القديمة: seturl → setalias
     if (data.startsWith("adm:seturl:")) {
       const key = data.slice("adm:seturl:".length);
       const btns = await getButtons();
       const btn = btns[key];
       if (!btn) { await send(chatId, "❌ الزر غير موجود."); return; }
-      const currentUrl = btn.customUrl || "";
       await forceReply(chatId, embedState(
-        "🔗 <b>تعديل رابط الزر: " + btn.label + "</b>\n\n" +
-        (currentUrl ? "الرابط الحالي:\n<code>" + currentUrl + "</code>\n\n" : "هذا الزر ليس له رابط مخصص بعد.\n\n") +
-        "اضغط ↩️ <b>رد (Reply)</b> وأرسل الرابط الجديد:\n" +
-        "<i>مثال: https://t.me/yourchannel</i>\n\n" +
-        "أو أرسل <code>-</code> لإزالة الرابط المخصص والرجوع للوضع الافتراضي.",
-        { step: "seturl", key }
+        "✨ <b>تعيين رابط مخصص للزر: " + btn.label + "</b>\n\n" +
+        "اضغط ↩️ <b>رد</b> وأرسل الاسم المخصص (مثال: mohammed):\n\n" +
+        "✅ كلا الرابطين سيرسلان نفس المحتوى.",
+        { step: "setalias", key }
       ));
       return;
     }
@@ -551,6 +607,11 @@ async function handleCallback(query) {
       const key = payload.slice(4); const btns = await getButtons();
       if (btns[key]) { await sendContent(chatId, btns[key]); return; }
     }
+    // ✅ تحقق من الـ alias أيضاً عند إعادة التحقق
+    const btns2 = await getButtons();
+    const aliasKey = Object.keys(btns2).find(k => btns2[k].customAlias === payload);
+    if (aliasKey) { await sendContent(chatId, btns2[aliasKey]); return; }
+
     const info = await getBotInfo(); const btns = await getButtons();
     await send(chatId, info.welcome, buildMenu(btns));
     return;
@@ -581,23 +642,25 @@ function loginHTML(err) {
 
 async function adminWebHTML(u) {
   const [btns, chs, users, info] = await Promise.all([getButtons(), getChannels(), getUsers(), getBotInfo()]);
-  // ✅ كل زر عنده حقل لتعديل الرابط المخصص
+  // ✅ كل زر عنده حقل لتعيين alias (اسم مخصص) — كلا الرابطين يرسلان نفس المحتوى
   const bRows = Object.entries(btns).map(function(e) {
     const k = e[0]; const b = e[1];
     const defaultLink = "https://t.me/" + u + "?start=btn_" + k;
-    const customUrlVal = (b.customUrl || "").replace(/'/g, "&#39;");
+    const customAlias = (b.customAlias || "").replace(/'/g, "&#39;");
+    const customLink  = customAlias ? "https://t.me/" + u + "?start=" + customAlias : "";
     return "<tr>" +
       "<td><b>" + b.label + "</b></td>" +
       "<td>" + b.type + "</td>" +
       "<td><code style='font-size:.68rem'>" + defaultLink + "</code></td>" +
       "<td>" +
-        "<form method='POST' style='display:flex;gap:4px;align-items:center'>" +
-          "<input type='hidden' name='action' value='seturl'>" +
+        "<form method='POST' style='display:flex;gap:4px;align-items:center;flex-wrap:wrap'>" +
+          "<input type='hidden' name='action' value='setalias'>" +
           "<input type='hidden' name='key' value='" + k + "'>" +
-          "<input type='text' name='customurl' value='" + customUrlVal + "' placeholder='https://...' style='font-size:.72rem;padding:3px 6px;width:160px;margin:0'>" +
+          "<input type='text' name='customalias' value='" + customAlias + "' placeholder='اسم مخصص (مثال: mohammed)' style='font-size:.72rem;padding:3px 6px;width:150px;margin:0'>" +
           "<button style='padding:3px 8px;background:#1565c0;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:.72rem;white-space:nowrap'>💾 حفظ</button>" +
-          (b.customUrl ? "<button name='clearurl' value='1' style='padding:3px 8px;background:#c62828;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:.72rem'>🗑</button>" : "") +
+          (customAlias ? "<button name='clearalias' value='1' style='padding:3px 8px;background:#c62828;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:.72rem'>🗑</button>" : "") +
         "</form>" +
+        (customLink ? "<div style='font-size:.65rem;color:#81c784;margin-top:3px'>✅ <code>" + customLink + "</code><br><span style='color:#aaa'>↑ يرسل نفس المحتوى كالرابط الافتراضي</span></div>" : "") +
       "</td>" +
       "<td><form method='POST' style='display:inline'><input type='hidden' name='action' value='del'><input type='hidden' name='key' value='" + k + "'><button class='db' onclick=\"return confirm('حذف?')\">🗑</button></form></td>" +
       "</tr>";
@@ -636,6 +699,7 @@ async function adminWebHTML(u) {
     "<br><br><h2>📢 إضافة قناة</h2><form method='POST'><input type='hidden' name='action' value='addch'>" +
     "<input name='ch' placeholder='@channel'><button class='btn'>➕ إضافة</button></form></div>" +
     "<div class='card full'><h2>🔘 الأزرار (" + Object.keys(btns).length + ")</h2>" +
+    "<p style='font-size:.78rem;color:#81c784;margin-bottom:10px'>✅ كلا الرابطين (الافتراضي والمخصص) يرسلان نفس المحتوى المحفوظ تماماً</p>" +
     (bRows ? "<div style='overflow-x:auto'><table><thead><tr><th>الاسم</th><th>النوع</th><th>الرابط الافتراضي</th><th>رابط مخصص (اختياري)</th><th>حذف</th></tr></thead><tbody>" + bRows + "</tbody></table></div>" : "<p style='color:#888;text-align:center;padding:16px'>لا توجد أزرار بعد</p>") + "</div>" +
     (cRows ? "<div class='card full'><h2>📢 القنوات</h2><table><thead><tr><th>القناة</th><th>إزالة</th></tr></thead><tbody>" + cRows + "</tbody></table></div>" : "") +
     "<div class='card full'><h2>📤 بث رسالة للجميع</h2><form method='POST'><input type='hidden' name='action' value='bcast'>" +
@@ -738,18 +802,25 @@ module.exports = async function handler(req, res) {
       } else if (action === "bcast") {
         const msg = (p.get("msg") || "").trim();
         if (msg) { const users = await getUsers(); for (const uid of users) { try { await tg("sendMessage",{chat_id:uid,text:msg,parse_mode:"HTML"}); } catch {} await new Promise(r=>setTimeout(r,55)); } }
-      } else if (action === "seturl") {
-        // ✅ تعيين أو حذف رابط مخصص من لوحة الويب
+      } else if (action === "setalias" || action === "seturl") {
+        // ✅ تعيين أو حذف اسم مخصص (alias) لرابط البوت
+        // كلا الرابطين (الافتراضي والمخصص) يرسلان نفس المحتوى المحفوظ
         const key = p.get("key");
-        const customurl = (p.get("customurl") || "").trim();
-        const clear = p.get("clearurl") === "1";
+        const rawAlias = (p.get("customalias") || p.get("customurl") || "").trim();
+        const clear = p.get("clearalias") === "1" || p.get("clearurl") === "1";
         if (key) {
           const btns = await getButtons();
           if (btns[key]) {
-            if (clear || !customurl) {
+            if (clear || !rawAlias) {
+              delete btns[key].customAlias;
+              // حذف القديم أيضاً إن وُجد
               delete btns[key].customUrl;
             } else {
-              btns[key].customUrl = customurl.startsWith("http") ? customurl : "https://" + customurl;
+              // تنظيف الـ alias
+              const alias = rawAlias.replace(/[^a-zA-Z0-9_\u0600-\u06FF]/g, "_").slice(0, 50);
+              btns[key].customAlias = alias;
+              // حذف القديم إن وُجد
+              delete btns[key].customUrl;
             }
             await setButtons(btns);
           }
