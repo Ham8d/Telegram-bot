@@ -1,5 +1,4 @@
 // bot.js — Telegram Button Bot | Vercel + JSONBin.io (no Upstash)
-// ✅ النسخة المعدّلة: دعم أزرار الروابط مع إمكانية التعديل
 
 const BOT_TOKEN  = process.env.BOT_TOKEN  || "YOUR_BOT_TOKEN_HERE";
 const ADMIN_ID   = parseInt(process.env.ADMIN_ID  || "YOUR_ADMIN_ID_HERE");
@@ -18,7 +17,7 @@ const DEFAULT_DATA = {
   info:  { welcome: "أهلاً بك! 👋\nاختر من القائمة:" }
 };
 
-let MEM_DATA = null;
+let MEM_DATA = null; // cache per warm instance
 
 async function getAll() {
   if (MEM_DATA) return MEM_DATA;
@@ -50,6 +49,7 @@ async function setAll(data) {
   } catch(e) { console.error("setAll error:", e.message); }
 }
 
+// ─── Data helpers ─────────────────────────────────────────────
 async function getButtons()  { return (await getAll()).btns  || {}; }
 async function setButtons(v) { const d = await getAll(); d.btns = v;  await setAll(d); }
 async function getChannels() { return (await getAll()).chs   || []; }
@@ -143,25 +143,24 @@ async function sendContent(chatId, btn) {
   else if (type === "audio")     await tg("sendAudio",    { chat_id: chatId, audio: content,    caption: cap, parse_mode: "HTML" });
   else if (type === "document")  await tg("sendDocument", { chat_id: chatId, document: content, caption: cap, parse_mode: "HTML" });
   else if (type === "animation") await tg("sendAnimation",{ chat_id: chatId, animation: content,caption: cap, parse_mode: "HTML" });
-  // type === "link" — الرابط يُفتح مباشرة من الزر بدون callback
 }
 
-// ─── User menu (only visible buttons) ────────────────────────
-// ✅ أزرار الروابط تستخدم url مباشرةً بدلاً من callback_data
+// ─── User menu ────────────────────────────────────────────────
+// إذا الزر عنده customUrl، الزر يفتح الرابط مباشرةً بدل callback
 function buildMenu(buttons) {
   const keys = Object.keys(buttons).filter(k => !buttons[k].hidden);
   if (!keys.length) return null;
   const rows = [];
   for (let i = 0; i < keys.length; i += 2) {
     const b0 = buttons[keys[i]];
-    const btn0 = b0.type === "link"
-      ? { text: b0.label, url: b0.url || "https://t.me" }
+    const btn0 = b0.customUrl
+      ? { text: b0.label, url: b0.customUrl }
       : { text: b0.label, callback_data: "btn:" + keys[i] };
     const row = [btn0];
     if (keys[i+1]) {
       const b1 = buttons[keys[i+1]];
-      const btn1 = b1.type === "link"
-        ? { text: b1.label, url: b1.url || "https://t.me" }
+      const btn1 = b1.customUrl
+        ? { text: b1.label, url: b1.customUrl }
         : { text: b1.label, callback_data: "btn:" + keys[i+1] };
       row.push(btn1);
     }
@@ -225,7 +224,6 @@ async function handleAdminReply(msg, state) {
       [{ text: "📝 نص",    callback_data: "adm:t:text:"    + label }, { text: "🖼 صورة",  callback_data: "adm:t:photo:"   + label }],
       [{ text: "🎬 فيديو", callback_data: "adm:t:video:"   + label }, { text: "🎵 صوت",   callback_data: "adm:t:audio:"   + label }],
       [{ text: "📁 ملف",   callback_data: "adm:t:document:"+ label }, { text: "🎞 GIF",   callback_data: "adm:t:animation:"+ label }],
-      [{ text: "🔗 رابط",  callback_data: "adm:t:link:"    + label }],
       [{ text: "❌ إلغاء", callback_data: "adm:open" }]
     ];
     await send(chatId, "✅ الاسم: <b>" + label + "</b>\n\nاختر <b>نوع المحتوى</b>:", kb);
@@ -261,34 +259,22 @@ async function handleAdminReply(msg, state) {
     return;
   }
 
-  // ✅ خطوة جديدة: إدخال رابط زر الرابط
-  if (state.step === "link_url") {
+  // ✅ تعديل الرابط المخصص للزر
+  if (state.step === "seturl") {
     let url = text.trim();
-    if (!url) { await send(chatId, "❌ الرابط لا يمكن أن يكون فارغاً. أرسل الرابط مجدداً:"); return; }
-    if (!url.startsWith("http://") && !url.startsWith("https://")) url = "https://" + url;
-    await saveLinkButton(chatId, state.label, url);
-    return;
-  }
-
-  // ✅ خطوة جديدة: تعديل رابط زر موجود
-  if (state.step === "editurl") {
-    let url = text.trim();
-    if (!url) { await send(chatId, "❌ الرابط لا يمكن أن يكون فارغاً. أرسل الرابط مجدداً:"); return; }
+    if (!url) { await send(chatId, "❌ الرابط فارغ. أرسل الرابط مجدداً:"); return; }
     if (!url.startsWith("http://") && !url.startsWith("https://")) url = "https://" + url;
     const btns = await getButtons();
-    if (btns[state.key]) {
-      const oldUrl = btns[state.key].url;
-      btns[state.key].url = url;
-      await setButtons(btns);
-      await send(chatId,
-        "✅ <b>تم تحديث الرابط بنجاح!</b>\n\n" +
-        "🔘 الزر: <b>" + btns[state.key].label + "</b>\n" +
-        "🔗 الرابط الجديد:\n<code>" + url + "</code>",
-        [[{ text: "↩️ القائمة", callback_data: "adm:open" }]]
-      );
-    } else {
-      await send(chatId, "❌ الزر غير موجود.", [[{ text: "↩️ القائمة", callback_data: "adm:open" }]]);
-    }
+    if (!btns[state.key]) { await send(chatId, "❌ الزر غير موجود."); return; }
+    btns[state.key].customUrl = url;
+    await setButtons(btns);
+    await send(chatId,
+      "✅ <b>تم تعديل الرابط بنجاح!</b>\n\n" +
+      "🔘 الزر: <b>" + btns[state.key].label + "</b>\n" +
+      "🔗 الرابط الجديد:\n<code>" + url + "</code>\n\n" +
+      "الآن عند ضغط المستخدم على الزر سيفتح هذا الرابط مباشرةً.",
+      [[{ text: "↩️ القائمة", callback_data: "adm:open" }]]
+    );
     return;
   }
 
@@ -349,25 +335,6 @@ async function saveButton(chatId, label, type, content, caption) {
   );
 }
 
-// ✅ دالة جديدة: حفظ زر الرابط
-async function saveLinkButton(chatId, label, url) {
-  const key  = makeKey();
-  const btns = await getButtons();
-  btns[key]  = { label, type: "link", url, hidden: false, createdAt: Date.now() };
-  await setButtons(btns);
-  await send(chatId,
-    "✅ <b>تم حفظ زر الرابط بنجاح!</b>\n\n" +
-    "🔘 الاسم: <b>" + label + "</b>\n" +
-    "🔗 الرابط: <code>" + url + "</code>\n\n" +
-    "👁 <b>هل يظهر الزر في قائمة المستخدمين؟</b>",
-    [
-      [{ text: "👁 مرئي للجميع", callback_data: "adm:vis:" + key + ":0" },
-       { text: "🔒 مخفي (رابط فقط)", callback_data: "adm:vis:" + key + ":1" }],
-      [{ text: "↩️ القائمة", callback_data: "adm:open" }]
-    ]
-  );
-}
-
 // ─── Callback handler ─────────────────────────────────────────
 async function handleCallback(query) {
   const chatId = query.message.chat.id;
@@ -394,18 +361,6 @@ async function handleCallback(query) {
       const parts = data.split(":");
       const type  = parts[2];
       const label = parts.slice(3).join(":");
-
-      // ✅ معالجة خاصة لنوع الرابط
-      if (type === "link") {
-        await forceReply(chatId, embedState(
-          "🔗 <b>إضافة زر رابط — الخطوة 2/2</b>\n\n" +
-          "✅ الاسم: <b>" + label + "</b>\n✅ النوع: <b>رابط 🔗</b>\n\n" +
-          "اضغط ↩️ <b>رد (Reply)</b> وأرسل <b>الرابط</b>:\n<i>مثال: https://t.me/yourchannel</i>",
-          { step: "link_url", label }
-        ));
-        return;
-      }
-
       const hints = {
         text: "أرسل النص الذي سيظهر (يدعم HTML)",
         photo: "أرسل رابط URL للصورة أو أرسل الصورة مباشرةً",
@@ -423,23 +378,24 @@ async function handleCallback(query) {
       return;
     }
 
+    // ─── قائمة الأزرار مع زر تعديل الرابط لكل زر ────────────
     if (data === "adm:list") {
-      const btns = await getButtons(); const keys = Object.keys(btns);
-      if (!keys.length) { await editMsg(chatId, msgId, "📭 لا توجد أزرار.", [[{ text: "↩️ رجوع", callback_data: "adm:back" }]]); return; }
+      const btns = await getButtons();
+      const keys = Object.keys(btns);
+      if (!keys.length) {
+        await editMsg(chatId, msgId, "📭 لا توجد أزرار.", [[{ text: "↩️ رجوع", callback_data: "adm:back" }]]);
+        return;
+      }
       let t = "📋 <b>الأزرار:</b>\n\n";
       keys.forEach(k => {
-        const icon = btns[k].type === "link" ? "🔗" : "📎";
-        t += (btns[k].hidden ? "🔒 مخفي" : "👁 مرئي") + " — " + icon + " <b>" + btns[k].label + "</b> (" + btns[k].type + ")\n";
+        const hasUrl = btns[k].customUrl ? " 🔗" : "";
+        t += (btns[k].hidden ? "🔒 مخفي" : "👁 مرئي") + " — <b>" + btns[k].label + "</b>" + hasUrl + "\n";
       });
-      t += "\n<i>اضغط لتبديل الظهور | ✏️ لتعديل الرابط</i>";
-      // ✅ أزرار الروابط تظهر مع زر تعديل الرابط
-      const kb = keys.map(k => {
-        const row = [{ text: (btns[k].hidden ? "🔒 " : "👁 ") + btns[k].label, callback_data: "adm:toggle:" + k }];
-        if (btns[k].type === "link") {
-          row.push({ text: "✏️ تعديل الرابط", callback_data: "adm:editurl:" + k });
-        }
-        return row;
-      });
+      t += "\n<i>🔗 = يفتح رابط مخصص عند الضغط</i>";
+      const kb = keys.map(k => [
+        { text: (btns[k].hidden ? "🔒 " : "👁 ") + btns[k].label, callback_data: "adm:toggle:" + k },
+        { text: btns[k].customUrl ? "✏️ تعديل الرابط" : "🔗 تعيين رابط", callback_data: "adm:seturl:" + k }
+      ]);
       kb.push([{ text: "↩️ رجوع", callback_data: "adm:back" }]);
       await editMsg(chatId, msgId, t, kb);
       return;
@@ -451,11 +407,10 @@ async function handleCallback(query) {
       if (!keys.length) { await editMsg(chatId, msgId, "📭 لا توجد أزرار.", [[{ text: "↩️ رجوع", callback_data: "adm:back" }]]); return; }
       let t = "🔗 <b>روابط الأزرار المباشرة:</b>\n\n";
       keys.forEach(k => {
-        if (btns[k].type === "link") {
-          t += "🔗 <b>" + btns[k].label + "</b>\n<code>" + btns[k].url + "</code>\n\n";
-        } else {
-          t += "🔘 <b>" + btns[k].label + "</b>\n<code>https://t.me/" + u + "?start=btn_" + k + "</code>\n\n";
-        }
+        t += "🔘 <b>" + btns[k].label + "</b>\n";
+        t += "الرابط الافتراضي: <code>https://t.me/" + u + "?start=btn_" + k + "</code>\n";
+        if (btns[k].customUrl) t += "🔗 الرابط المخصص: <code>" + btns[k].customUrl + "</code>\n";
+        t += "\n";
       });
       await editMsg(chatId, msgId, t, [[{ text: "↩️ رجوع", callback_data: "adm:back" }]]);
       return;
@@ -464,10 +419,7 @@ async function handleCallback(query) {
     if (data === "adm:del") {
       const btns = await getButtons(); const keys = Object.keys(btns);
       if (!keys.length) { await editMsg(chatId, msgId, "📭 لا توجد أزرار.", [[{ text: "↩️ رجوع", callback_data: "adm:back" }]]); return; }
-      const kb = keys.map(k => {
-        const icon = btns[k].type === "link" ? "🔗 " : "";
-        return [{ text: "🗑 " + icon + btns[k].label, callback_data: "adm:delkey:" + k }];
-      });
+      const kb = keys.map(k => [{ text: "🗑 " + btns[k].label, callback_data: "adm:delkey:" + k }]);
       kb.push([{ text: "↩️ رجوع", callback_data: "adm:back" }]);
       await editMsg(chatId, msgId, "اختر الزر للحذف:", kb);
       return;
@@ -504,34 +456,33 @@ async function handleCallback(query) {
       const allBtns = await getButtons(); const keys2 = Object.keys(allBtns);
       let t = "📋 <b>الأزرار:</b>\n\n";
       keys2.forEach(k => {
-        const icon = allBtns[k].type === "link" ? "🔗" : "📎";
-        t += (allBtns[k].hidden ? "🔒 مخفي" : "👁 مرئي") + " — " + icon + " <b>" + allBtns[k].label + "</b> (" + allBtns[k].type + ")\n";
+        const hasUrl = allBtns[k].customUrl ? " 🔗" : "";
+        t += (allBtns[k].hidden ? "🔒 مخفي" : "👁 مرئي") + " — <b>" + allBtns[k].label + "</b>" + hasUrl + "\n";
       });
-      t += "\n<i>اضغط لتبديل الظهور | ✏️ لتعديل الرابط</i>";
-      const kb2 = keys2.map(k => {
-        const row = [{ text: (allBtns[k].hidden ? "🔒 " : "👁 ") + allBtns[k].label, callback_data: "adm:toggle:" + k }];
-        if (allBtns[k].type === "link") {
-          row.push({ text: "✏️ تعديل الرابط", callback_data: "adm:editurl:" + k });
-        }
-        return row;
-      });
+      t += "\n<i>🔗 = يفتح رابط مخصص عند الضغط</i>";
+      const kb2 = keys2.map(k => [
+        { text: (allBtns[k].hidden ? "🔒 " : "👁 ") + allBtns[k].label, callback_data: "adm:toggle:" + k },
+        { text: allBtns[k].customUrl ? "✏️ تعديل الرابط" : "🔗 تعيين رابط", callback_data: "adm:seturl:" + k }
+      ]);
       kb2.push([{ text: "↩️ رجوع", callback_data: "adm:back" }]);
       await editMsg(chatId, msgId, t, kb2);
       return;
     }
 
-    // ✅ جديد: تعديل رابط زر موجود
-    if (data.startsWith("adm:editurl:")) {
-      const key = data.slice("adm:editurl:".length);
+    // ✅ تعيين أو تعديل رابط مخصص لأي زر
+    if (data.startsWith("adm:seturl:")) {
+      const key = data.slice("adm:seturl:".length);
       const btns = await getButtons();
       const btn = btns[key];
       if (!btn) { await send(chatId, "❌ الزر غير موجود."); return; }
+      const currentUrl = btn.customUrl || "";
       await forceReply(chatId, embedState(
-        "✏️ <b>تعديل رابط الزر</b>\n\n" +
-        "🔘 الزر: <b>" + btn.label + "</b>\n" +
-        "🔗 الرابط الحالي:\n<code>" + btn.url + "</code>\n\n" +
-        "اضغط ↩️ <b>رد (Reply)</b> وأرسل <b>الرابط الجديد</b>:",
-        { step: "editurl", key }
+        "🔗 <b>تعديل رابط الزر: " + btn.label + "</b>\n\n" +
+        (currentUrl ? "الرابط الحالي:\n<code>" + currentUrl + "</code>\n\n" : "هذا الزر ليس له رابط مخصص بعد.\n\n") +
+        "اضغط ↩️ <b>رد (Reply)</b> وأرسل الرابط الجديد:\n" +
+        "<i>مثال: https://t.me/yourchannel</i>\n\n" +
+        "أو أرسل <code>-</code> لإزالة الرابط المخصص والرجوع للوضع الافتراضي.",
+        { step: "seturl", key }
       ));
       return;
     }
@@ -580,12 +531,10 @@ async function handleCallback(query) {
 
     if (data === "adm:stats") {
       const [users, btns, chs] = await Promise.all([getUsers(), getButtons(), getChannels()]);
-      const linkCount = Object.values(btns).filter(b => b.type === "link").length;
       await editMsg(chatId, msgId,
         "📊 <b>إحصائيات البوت</b>\n\n" +
         "👤 المستخدمون: <b>" + users.length + "</b>\n" +
         "🔘 الأزرار: <b>" + Object.keys(btns).length + "</b>\n" +
-        "🔗 أزرار الروابط: <b>" + linkCount + "</b>\n" +
         "📢 القنوات: <b>" + chs.length + "</b>",
         [[{ text: "↩️ رجوع", callback_data: "adm:back" }]]
       );
@@ -632,16 +581,26 @@ function loginHTML(err) {
 
 async function adminWebHTML(u) {
   const [btns, chs, users, info] = await Promise.all([getButtons(), getChannels(), getUsers(), getBotInfo()]);
+  // ✅ كل زر عنده حقل لتعديل الرابط المخصص
   const bRows = Object.entries(btns).map(function(e) {
     const k = e[0]; const b = e[1];
-    const typeLabel = b.type === "link" ? "🔗 رابط" : b.type;
-    // ✅ أزرار الروابط تعرض الرابط وزر تعديل مباشر في الجدول
-    const linkCell = b.type === "link"
-      ? "<td><code style='font-size:.72rem'>" + (b.url || "") + "</code><br><form method='POST' style='display:inline;margin-top:4px'><input type='hidden' name='action' value='editurl'><input type='hidden' name='key' value='" + k + "'><input type='text' name='newurl' value='" + (b.url || "").replace(/'/g,"&#39;") + "' style='font-size:.72rem;padding:3px 5px;width:180px'><button style='padding:3px 7px;background:#1565c0;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:.72rem'>✏️ حفظ</button></form></td>"
-      : "<td><code style='font-size:.72rem'>https://t.me/" + u + "?start=btn_" + k + "</code></td>";
-    return "<tr><td><b>" + b.label + "</b></td><td>" + typeLabel + "</td>" +
-      linkCell +
-      "<td><form method='POST' style='display:inline'><input type='hidden' name='action' value='del'><input type='hidden' name='key' value='" + k + "'><button class='db' onclick=\"return confirm('حذف?')\">🗑</button></form></td></tr>";
+    const defaultLink = "https://t.me/" + u + "?start=btn_" + k;
+    const customUrlVal = (b.customUrl || "").replace(/'/g, "&#39;");
+    return "<tr>" +
+      "<td><b>" + b.label + "</b></td>" +
+      "<td>" + b.type + "</td>" +
+      "<td><code style='font-size:.68rem'>" + defaultLink + "</code></td>" +
+      "<td>" +
+        "<form method='POST' style='display:flex;gap:4px;align-items:center'>" +
+          "<input type='hidden' name='action' value='seturl'>" +
+          "<input type='hidden' name='key' value='" + k + "'>" +
+          "<input type='text' name='customurl' value='" + customUrlVal + "' placeholder='https://...' style='font-size:.72rem;padding:3px 6px;width:160px;margin:0'>" +
+          "<button style='padding:3px 8px;background:#1565c0;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:.72rem;white-space:nowrap'>💾 حفظ</button>" +
+          (b.customUrl ? "<button name='clearurl' value='1' style='padding:3px 8px;background:#c62828;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:.72rem'>🗑</button>" : "") +
+        "</form>" +
+      "</td>" +
+      "<td><form method='POST' style='display:inline'><input type='hidden' name='action' value='del'><input type='hidden' name='key' value='" + k + "'><button class='db' onclick=\"return confirm('حذف?')\">🗑</button></form></td>" +
+      "</tr>";
   }).join("");
   const cRows = chs.map(function(c) {
     return "<tr><td>" + c + "</td><td><form method='POST' style='display:inline'><input type='hidden' name='action' value='delch'><input type='hidden' name='ch' value='" + c + "'><button class='db' onclick=\"return confirm('إزالة?')\">🗑</button></form></td></tr>";
@@ -667,9 +626,8 @@ async function adminWebHTML(u) {
     "<div class='g'>" +
     "<div class='card'><h2>➕ إضافة زر</h2><form method='POST'><input type='hidden' name='action' value='add'>" +
     "<label>اسم الزر</label><input name='label' required>" +
-    "<label>النوع</label><select name='type'><option value='text'>📝 نص</option><option value='photo'>🖼 صورة</option><option value='video'>🎬 فيديو</option><option value='audio'>🎵 صوت</option><option value='document'>📁 ملف</option><option value='animation'>🎞 GIF</option><option value='link'>🔗 رابط</option></select>" +
-    "<label>المحتوى (نص أو رابط أو URL وسائط)</label><textarea name='content'></textarea>" +
-    "<label>رابط الزر (للنوع 🔗 رابط فقط)</label><input name='url' placeholder='https://example.com'>" +
+    "<label>النوع</label><select name='type'><option value='text'>📝 نص</option><option value='photo'>🖼 صورة</option><option value='video'>🎬 فيديو</option><option value='audio'>🎵 صوت</option><option value='document'>📁 ملف</option><option value='animation'>🎞 GIF</option></select>" +
+    "<label>المحتوى (نص أو رابط)</label><textarea name='content' required></textarea>" +
     "<label>تعليق (للوسائط - اختياري)</label><input name='caption'>" +
     "<button class='btn'>➕ إضافة الزر</button></form></div>" +
     "<div class='card'><h2>👋 رسالة الترحيب</h2><form method='POST'><input type='hidden' name='action' value='welcome'>" +
@@ -678,7 +636,7 @@ async function adminWebHTML(u) {
     "<br><br><h2>📢 إضافة قناة</h2><form method='POST'><input type='hidden' name='action' value='addch'>" +
     "<input name='ch' placeholder='@channel'><button class='btn'>➕ إضافة</button></form></div>" +
     "<div class='card full'><h2>🔘 الأزرار (" + Object.keys(btns).length + ")</h2>" +
-    (bRows ? "<div style='overflow-x:auto'><table><thead><tr><th>الاسم</th><th>النوع</th><th>الرابط / المحتوى</th><th>حذف</th></tr></thead><tbody>" + bRows + "</tbody></table></div>" : "<p style='color:#888;text-align:center;padding:16px'>لا توجد أزرار بعد</p>") + "</div>" +
+    (bRows ? "<div style='overflow-x:auto'><table><thead><tr><th>الاسم</th><th>النوع</th><th>الرابط الافتراضي</th><th>رابط مخصص (اختياري)</th><th>حذف</th></tr></thead><tbody>" + bRows + "</tbody></table></div>" : "<p style='color:#888;text-align:center;padding:16px'>لا توجد أزرار بعد</p>") + "</div>" +
     (cRows ? "<div class='card full'><h2>📢 القنوات</h2><table><thead><tr><th>القناة</th><th>إزالة</th></tr></thead><tbody>" + cRows + "</tbody></table></div>" : "") +
     "<div class='card full'><h2>📤 بث رسالة للجميع</h2><form method='POST'><input type='hidden' name='action' value='bcast'>" +
     "<textarea name='msg' rows='3' placeholder='اكتب رسالتك...'></textarea>" +
@@ -692,11 +650,9 @@ module.exports = async function handler(req, res) {
   const url  = new URL(req.url, "https://" + req.headers.host);
   const path = url.pathname;
 
-  // Setup: create webhook + create JSONBin if needed
   if (url.searchParams.get("setup") === "1") {
     const webhookUrl = "https://" + req.headers.host + "/api/bot";
     const wh = await tg("setWebhook", { url: webhookUrl, allowed_updates: ["message","callback_query"] });
-
     let binInfo = "";
     if (JBKEY && !JBID) {
       try {
@@ -716,12 +672,10 @@ module.exports = async function handler(req, res) {
     } else {
       binInfo = "\n\n✅ JSONBin مُعدَّل مسبقاً (ID: " + JBID + ")";
     }
-
     res.status(200).json({ ok: wh.ok, webhook: webhookUrl, storage: binInfo });
     return;
   }
 
-  // Debug page
   if (path === "/debug" || url.searchParams.get("debug") === "1") {
     let storageTest = "لم يُختبر";
     if (JBKEY && JBID) {
@@ -735,25 +689,14 @@ module.exports = async function handler(req, res) {
       "<h2>🔧 تشخيص البوت</h2><table>" +
       "<tr><td>BOT_TOKEN</td><td class='" + (process.env.BOT_TOKEN ? "ok'>✅ مُعدَّل" : "warn'>⚠️ افتراضي") + "</td></tr>" +
       "<tr><td>ADMIN_ID</td><td class='ok'>✅ " + ADMIN_ID + "</td></tr>" +
-      "<tr><td>JSONBIN_KEY</td><td class='" + (JBKEY ? "ok'>✅ مُعدَّل" : "err'>❌ غير مُعدَّل — الأزرار لن تُحفظ!") + "</td></tr>" +
-      "<tr><td>JSONBIN_ID</td><td class='" + (JBID ? "ok'>✅ " + JBID : "err'>❌ غير مُعدَّل — الأزرار لن تُحفظ!") + "</td></tr>" +
+      "<tr><td>JSONBIN_KEY</td><td class='" + (JBKEY ? "ok'>✅ مُعدَّل" : "err'>❌ غير مُعدَّل") + "</td></tr>" +
+      "<tr><td>JSONBIN_ID</td><td class='" + (JBID ? "ok'>✅ " + JBID : "err'>❌ غير مُعدَّل") + "</td></tr>" +
       "<tr><td>اختبار التخزين</td><td>" + storageTest + "</td></tr>" +
-      "</table>" +
-      (!JBKEY || !JBID ? "<div style='margin-top:20px;padding:16px;background:#2a1010;border:1px solid #c62828;border-radius:8px'>" +
-        "<b style='color:#ef9a9a'>⚠️ إعداد مطلوب:</b><br><br>" +
-        "1. سجّل في <a href='https://jsonbin.io' style='color:#7986cb'>jsonbin.io</a> (مجاني)<br>" +
-        "2. أنشئ API Key من صفحة API Keys<br>" +
-        "3. أضف <code>JSONBIN_KEY</code> في Vercel → Settings → Environment Variables<br>" +
-        "4. افتح <code>/api/bot?setup=1</code> لإنشاء البين تلقائياً<br>" +
-        "5. انسخ الـ JSONBIN_ID المعروض وأضفه في Vercel<br>" +
-        "6. أعد النشر (Redeploy)" +
-        "</div>" : "") +
-      "</body></html>";
+      "</table></body></html>";
     res.setHeader("Content-Type","text/html; charset=utf-8");
     res.status(200).send(html); return;
   }
 
-  // Web admin
   if (path === "/admin" || path === "/admin/") {
     function gc(name) {
       const m = (req.headers.cookie || "").match(new RegExp("(?:^|; )" + name + "=([^;]*)"));
@@ -781,22 +724,8 @@ module.exports = async function handler(req, res) {
       const p = new URLSearchParams(b);
       const action = p.get("action");
       if (action === "add") {
-        const label = (p.get("label") || "").trim();
-        const type = p.get("type");
-        const content = (p.get("content") || "").trim();
-        const caption = (p.get("caption") || "").trim();
-        const urlVal = (p.get("url") || "").trim();
-        if (label) {
-          const btns = await getButtons();
-          if (type === "link") {
-            // ✅ حفظ زر الرابط من لوحة الويب
-            const finalUrl = urlVal || content || "https://t.me";
-            btns[makeKey()] = { label, type: "link", url: finalUrl, hidden: false, createdAt: Date.now() };
-          } else if (content) {
-            btns[makeKey()] = { label, type, content, caption, createdAt: Date.now() };
-          }
-          await setButtons(btns);
-        }
+        const label = (p.get("label") || "").trim(), type = p.get("type"), content = (p.get("content") || "").trim(), caption = (p.get("caption") || "").trim();
+        if (label && content) { const btns = await getButtons(); btns[makeKey()] = { label, type, content, caption, createdAt: Date.now() }; await setButtons(btns); }
       } else if (action === "del") {
         const btns = await getButtons(); delete btns[p.get("key")]; await setButtons(btns);
       } else if (action === "addch") {
@@ -809,14 +738,19 @@ module.exports = async function handler(req, res) {
       } else if (action === "bcast") {
         const msg = (p.get("msg") || "").trim();
         if (msg) { const users = await getUsers(); for (const uid of users) { try { await tg("sendMessage",{chat_id:uid,text:msg,parse_mode:"HTML"}); } catch {} await new Promise(r=>setTimeout(r,55)); } }
-      } else if (action === "editurl") {
-        // ✅ تعديل رابط زر من لوحة الويب
+      } else if (action === "seturl") {
+        // ✅ تعيين أو حذف رابط مخصص من لوحة الويب
         const key = p.get("key");
-        const newurl = (p.get("newurl") || "").trim();
-        if (key && newurl) {
+        const customurl = (p.get("customurl") || "").trim();
+        const clear = p.get("clearurl") === "1";
+        if (key) {
           const btns = await getButtons();
-          if (btns[key] && btns[key].type === "link") {
-            btns[key].url = newurl.startsWith("http") ? newurl : "https://" + newurl;
+          if (btns[key]) {
+            if (clear || !customurl) {
+              delete btns[key].customUrl;
+            } else {
+              btns[key].customUrl = customurl.startsWith("http") ? customurl : "https://" + customurl;
+            }
             await setButtons(btns);
           }
         }
@@ -827,7 +761,6 @@ module.exports = async function handler(req, res) {
     res.status(200).send(await adminWebHTML(me.result && me.result.username || "")); return;
   }
 
-  // Telegram webhook
   if (req.method === "POST") {
     let b = ""; for await (const c of req) b += c;
     let update;
